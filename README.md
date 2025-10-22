@@ -141,11 +141,11 @@ python tools/simulator.py run \
 ## 아키텍처 개요
 ```mermaid
 flowchart LR
-  CTrail[CloudTrail Logs (S3)] --> Analyzer[Analyzer Lambda]
+  CT[CloudTrail S3 Logs] --> Analyzer[Analyzer Lambda]
   Analyzer --> AccessAnalyzer[Access Analyzer API]
   Analyzer --> Simulator[Policy Simulator]
-  Simulator --> FindingsS3[artifacts/findings.json]
-  FindingsS3 --> Dashboard[Streamlit Dashboard]
+  Simulator --> Findings[Artifacts (findings.json)]
+  Findings --> Dashboard[Streamlit Dashboard]
   Simulator --> Notifier[SNS / Slack / Email]
   Dashboard --> Operators[Operators]
 
