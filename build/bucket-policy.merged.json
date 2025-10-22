@@ -1,0 +1,124 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalOrgID": "o-exampleorg",
+          "aws:SourceVpce": "vpce-00000000000000000"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:role/TeamADataConsumer"
+      },
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket/team-a/*"
+      ],
+      "Sid": "AllowException1",
+      "_comment": "Exception reason: Partner analytics review for Q4"
+    },
+    {
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalOrgID": "o-exampleorg",
+          "aws:SourceVpce": "vpce-00000000000000000"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:role/PartnerReader"
+      },
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket/partner-x/*"
+      ],
+      "Sid": "AllowException2",
+      "_comment": "Exception reason: POC \ud30c\uc77c \uc77d\uae30\ub9cc \ud5c8\uc6a9"
+    },
+    {
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalOrgID": "o-exampleorg",
+          "aws:SourceVpce": "vpce-00000000000000000"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": "*",
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Sid": "AllowOrgAccessViaVpce"
+    },
+    {
+      "Action": [
+        "s3:PutBucketAcl",
+        "s3:PutObjectAcl",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy"
+      ],
+      "Effect": "Deny",
+      "Principal": "*",
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Sid": "DenyPublicACLAndPolicyChanges"
+    },
+    {
+      "Action": "s3:*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalOrgID": "o-exampleorg"
+        }
+      },
+      "Effect": "Deny",
+      "Principal": "*",
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Sid": "DenyRequestsOutsideOrganization"
+    },
+    {
+      "Action": "s3:*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:SourceVpce": "vpce-00000000000000000"
+        }
+      },
+      "Effect": "Deny",
+      "Principal": "*",
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Sid": "DenyRequestsOutsideVpce"
+    },
+    {
+      "Action": "s3:*",
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      },
+      "Effect": "Deny",
+      "Principal": "*",
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Sid": "EnforceSecureTransportOptional"
+    }
+  ],
+  "Version": "2012-10-17"
+}

@@ -1,0 +1,32 @@
+version: 0.2
+env:
+  exported-variables:
+    - STATEMENT_COUNT
+    - EXCEPTION_COUNT
+phases:
+  install:
+    commands:
+      - python -m venv .venv && source .venv/bin/activate
+      - pip install -r requirements.txt
+      - npm ci --prefix iac/cdk
+  pre_build:
+    commands:
+      - source .venv/bin/activate
+      - python tools/validate_policy.py --file policies/bucket-policy.base.json
+      - python tools/merge_policy.py --base policies/bucket-policy.base.json --exceptions policies/bucket-policy.exceptions.json --requests-dir .exception-requests --out build/bucket-policy.merged.json --vars OrgId=$ORG_ID,VpcEndpointId=$VPCe_ID,BucketArn=$BUCKET_ARN,BucketName=$BUCKET_NAME
+      - python tools/validate_policy.py --file build/bucket-policy.merged.json
+      - pytest -q
+      - export STATEMENT_COUNT=$(jq '.Statement | length' build/bucket-policy.merged.json)
+      - export EXCEPTION_COUNT=$(jq '[.Statement[] | select(.Sid | tostring | startswith("AllowException"))] | length' build/bucket-policy.merged.json)
+  build:
+    commands:
+      - source .venv/bin/activate
+      - npx --yes cdk synth --app "npx ts-node iac/cdk/bin/app.ts" -c bucketName=$BUCKET_NAME -c orgId=$ORG_ID -c vpcEndpointId=$VPCe_ID
+  post_build:
+    commands:
+      - echo "Policy summary:" && jq '.Statement|length' build/bucket-policy.merged.json || true
+      - echo "Exceptions count: ${EXCEPTION_COUNT:-unknown}"
+artifacts:
+  files:
+    - build/bucket-policy.merged.json
+    - cdk.out/**

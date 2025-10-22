@@ -1,0 +1,68 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyRequestsFromOutsideOrg",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalOrgID": "o-exampleorg"
+        }
+      }
+    },
+    {
+      "Sid": "DenyRequestsNotFromVpce",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "aws:SourceVpce": "vpce-00000000000000000"
+        }
+      }
+    },
+    {
+      "Sid": "DenyPublicAnonymousAccess",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalType": "Anonymous"
+        }
+      }
+    },
+    {
+      "Sid": "DenyAclAndPolicyChanges",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:PutBucketAcl",
+        "s3:PutObjectAcl",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy"
+      ],
+      "Resource": [
+        "arn:aws:s3:::example-data-perimeter-bucket",
+        "arn:aws:s3:::example-data-perimeter-bucket/*"
+      ]
+    }
+  ]
+}

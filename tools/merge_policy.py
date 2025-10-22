@@ -1,0 +1,377 @@
+"""Merge the baseline bucket policy with approved, time-bound exceptions."""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
+
+LOG = logging.getLogger("s3_data_perimeter.merge")
+DEFAULT_POLICY_VERSION = "2012-10-17"
+MANDATORY_VARIABLES = {"BucketArn", "BucketName", "OrgId", "VpcEndpointId"}
+BUCKET_LEVEL_ACTIONS = {
+    "s3:ListBucket",
+    "s3:ListBucketVersions",
+    "s3:ListBucketMultipartUploads",
+    "s3:GetBucketLocation",
+}
+
+
+class PolicyMergeError(RuntimeError):
+    """Raised when policy merge or validation fails."""
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    policy: Dict[str, Any]
+    applied_exception_ids: Sequence[str]
+    skipped_exception_ids: Sequence[str]
+
+
+@dataclass(frozen=True)
+class ExceptionEntry:
+    identifier: str
+    principal_arn: str
+    actions: List[str]
+    prefix: str
+    expires_at: date
+    reason: str
+
+
+def load_policy(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise PolicyMergeError(f"policy file not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        try:
+            document = json.load(handle)
+        except json.JSONDecodeError as exc:  # pragma: no cover - explicit error path
+            raise PolicyMergeError(f"invalid JSON in {path}: {exc}") from exc
+    if "Statement" not in document or not isinstance(document["Statement"], list):
+        raise PolicyMergeError("baseline policy must contain a Statement list")
+    return document
+
+
+def _parse_date(value: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise PolicyMergeError(f"invalid expiresAt date: {value}") from exc
+
+
+def load_exceptions(path: Path, current_date: date, *, fail_on_expired: bool = True) -> List[ExceptionEntry]:
+    if not path.exists():
+        LOG.info("no exceptions file found at %s; continuing without overrides", path)
+        return []
+    with path.open("r", encoding="utf-8") as handle:
+        try:
+            payload = json.load(handle)
+        except json.JSONDecodeError as exc:  # pragma: no cover - explicit error path
+            raise PolicyMergeError(f"invalid JSON in {path}: {exc}") from exc
+    items = payload.get("Exceptions", [])
+    if not isinstance(items, list):
+        raise PolicyMergeError("exceptions payload must define an 'Exceptions' list")
+
+    exceptions: List[ExceptionEntry] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            raise PolicyMergeError("each exception must be a JSON object")
+        missing = [key for key in ("principalArn", "actions", "prefix", "expiresAt", "reason") if key not in raw]
+        if missing:
+            raise PolicyMergeError(f"exception missing fields: {', '.join(missing)}")
+        actions = raw.get("actions")
+        if not isinstance(actions, list) or not actions or not all(isinstance(a, str) for a in actions):
+            raise PolicyMergeError("actions must be a non-empty list of strings")
+        prefix = str(raw.get("prefix"))
+        if prefix.startswith("/"):
+            prefix = prefix[1:]
+        identifier = raw.get("id") or raw.get("principalArn")
+        entry = ExceptionEntry(
+            identifier=str(identifier),
+            principal_arn=str(raw["principalArn"]),
+            actions=sorted(actions),
+            prefix=prefix,
+            expires_at=_parse_date(str(raw["expiresAt"])),
+            reason=str(raw["reason"]),
+        )
+        if entry.expires_at < current_date:
+            message = f"exception {entry.identifier} expired on {entry.expires_at}"
+            if fail_on_expired:
+                raise PolicyMergeError(message)
+            LOG.warning("%s", message)
+            continue
+        exceptions.append(entry)
+    return exceptions
+
+
+def parse_variables(assignments: Iterable[str]) -> Dict[str, str]:
+    variables: Dict[str, str] = {}
+    for assignment in assignments:
+        if not assignment:
+            continue
+        parts = assignment.split(",")
+        for part in parts:
+            if not part:
+                continue
+            if "=" not in part:
+                raise PolicyMergeError(f"invalid --vars entry, expected KEY=VALUE: {part}")
+            key, value = part.split("=", 1)
+            variables[key.strip()] = value.strip()
+    return variables
+
+
+def _ensure_variables(variable_map: MutableMapping[str, str]) -> Dict[str, str]:
+    if "BucketArn" not in variable_map and "BucketName" in variable_map:
+        variable_map["BucketArn"] = f"arn:aws:s3:::{variable_map['BucketName']}"
+    if "BucketName" not in variable_map and "BucketArn" in variable_map:
+        variable_map["BucketName"] = variable_map["BucketArn"].split(":")[-1]
+    missing = [key for key in MANDATORY_VARIABLES if key not in variable_map]
+    if missing:
+        raise PolicyMergeError(f"missing required template variables: {', '.join(sorted(missing))}")
+    return dict(variable_map)
+
+
+def merge_policies(
+    base_policy: Mapping[str, Any],
+    exceptions: Sequence[ExceptionEntry],
+    variables: Mapping[str, str],
+) -> MergeResult:
+    statements = [json.loads(json.dumps(stmt)) for stmt in base_policy.get("Statement", [])]
+    applied: List[str] = []
+    skipped: List[str] = []
+
+    for index, entry in enumerate(exceptions):
+        try:
+            statement = build_exception_statement(entry, variables, index)
+        except PolicyMergeError as exc:
+            LOG.error("failed to build exception %s: %s", entry.identifier, exc)
+            skipped.append(entry.identifier)
+            continue
+        statements.append(statement)
+        applied.append(entry.identifier)
+
+    statements = deduplicate_statements(statements)
+    statements = sort_statements(statements)
+
+    policy = {
+        "Version": base_policy.get("Version", DEFAULT_POLICY_VERSION),
+        "Statement": statements,
+    }
+    policy = apply_variables(policy, variables)
+    return MergeResult(policy=policy, applied_exception_ids=applied, skipped_exception_ids=skipped)
+
+
+def build_exception_statement(entry: ExceptionEntry, variables: Mapping[str, str], index: int) -> Dict[str, Any]:
+    bucket_arn = variables["BucketArn"]
+    bucket_name = variables["BucketName"]
+    org_id = variables["OrgId"]
+    vpce_id = variables["VpcEndpointId"]
+
+    resources = derive_resources(entry.actions, bucket_arn, entry.prefix)
+    condition: Dict[str, Any] = {
+        "StringEquals": {
+            "aws:SourceVpce": vpce_id,
+            "aws:PrincipalOrgID": org_id,
+        }
+    }
+
+    sid = f"AllowException{index + 1}"
+    statement = {
+        "Sid": sid,
+        "Effect": "Allow",
+        "Principal": {
+            "AWS": entry.principal_arn,
+        },
+        "Action": sorted(set(entry.actions)),
+        "Resource": sorted(resources),
+        "Condition": condition,
+        "_comment": f"Exception reason: {entry.reason}",
+    }
+
+    if any(action.startswith("s3:PutObject") for action in entry.actions):
+        condition.setdefault("StringEqualsIfPresent", {})["s3:x-amz-server-side-encryption"] = ["AES256", "aws:kms"]
+    return statement
+
+
+def derive_resources(actions: Sequence[str], bucket_arn: str, prefix: str) -> List[str]:
+    sanitized_prefix = prefix.rstrip("/") if prefix else ""
+    object_resource = f"{bucket_arn}/{sanitized_prefix}" if sanitized_prefix else f"{bucket_arn}/*"
+    resources = {object_resource}
+    if any(action in BUCKET_LEVEL_ACTIONS for action in actions):
+        resources.add(bucket_arn)
+    return sorted(resources)
+
+
+def deduplicate_statements(statements: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    unique: List[Dict[str, Any]] = []
+    for statement in statements:
+        encoded = json.dumps(statement, sort_keys=True)
+        if encoded in seen:
+            continue
+        seen.add(encoded)
+        unique.append(statement)
+    return unique
+
+
+def sort_statements(statements: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def sort_key(statement: Mapping[str, Any]) -> tuple:
+        sid = statement.get("Sid")
+        effect = statement.get("Effect")
+        action = statement.get("Action")
+        return (
+            sid if isinstance(sid, str) else "",
+            effect if isinstance(effect, str) else "",
+            json.dumps(action, sort_keys=True) if action is not None else "",
+        )
+
+    return sorted(statements, key=sort_key)
+
+
+def load_requests_directory(directory: Path, current_date: date) -> List[ExceptionEntry]:
+    if not directory.exists():
+        LOG.info("requests directory %s not found; skipping", directory)
+        return []
+    entries: List[ExceptionEntry] = []
+    for path in sorted(directory.glob("*.json")):
+        with path.open("r", encoding="utf-8") as handle:
+            try:
+                payload = json.load(handle)
+            except json.JSONDecodeError as exc:
+                raise PolicyMergeError(f"invalid JSON in request {path}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise PolicyMergeError(f"request {path} must be a JSON object")
+        try:
+            entry = ExceptionEntry(
+                identifier=payload.get("id") or payload["principalArn"],
+                principal_arn=str(payload["principalArn"]),
+                actions=_coerce_actions(payload["actions"], path),
+                prefix=str(payload["prefix"]),
+                expires_at=_parse_date(str(payload["expiresAt"])),
+                reason=str(payload["reason"]),
+            )
+        except KeyError as exc:
+            raise PolicyMergeError(f"request {path} missing required field {exc}") from exc
+        if entry.expires_at < current_date:
+            raise PolicyMergeError(f"request {path} expired on {entry.expires_at}; remove or update the request")
+        entries.append(entry)
+    return entries
+
+
+def _coerce_actions(raw: Any, source: Path) -> List[str]:
+    if not isinstance(raw, list) or not raw:
+        raise PolicyMergeError(f"request {source} actions must be a non-empty list")
+    if not all(isinstance(item, str) for item in raw):
+        raise PolicyMergeError(f"request {source} actions must contain only strings")
+    return list(dict.fromkeys(raw))
+def apply_variables(document: Dict[str, Any], variables: Mapping[str, str]) -> Dict[str, Any]:
+    def substitute(value: Any) -> Any:
+        if isinstance(value, str):
+            result = value
+            for key, val in variables.items():
+                result = result.replace(f"${{{key}}}", val)
+            return result
+        if isinstance(value, list):
+            return [substitute(item) for item in value]
+        if isinstance(value, dict):
+            return {substitute(key): substitute(val) for key, val in value.items()}
+        return value
+
+    substituted = substitute(document)
+    serialized = json.dumps(substituted, sort_keys=True)
+    if "${" in serialized:
+        raise PolicyMergeError("unresolved template variables remain after substitution")
+    return json.loads(json.dumps(substituted))
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", type=Path, required=True, help="Path to baseline policy JSON")
+    parser.add_argument("--exceptions", type=Path, required=True, help="Path to exceptions JSON")
+    parser.add_argument("--out", type=Path, required=True, help="Destination for merged policy JSON")
+    parser.add_argument(
+        "--requests-dir",
+        type=Path,
+        default=None,
+        help="Directory containing pending exception request JSON files",
+    )
+    parser.add_argument(
+        "--vars",
+        metavar="KEY=VALUE",
+        nargs="*",
+        default=[],
+        help="Template variables (repeat or comma separated)",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging for troubleshooting")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON summary")
+    parser.add_argument("--dry-run", action="store_true", help="Compute the merge without writing output")
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="Override current date (YYYY-MM-DD) for deterministic testing",
+    )
+    return parser
+
+
+def configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s - %(message)s")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    configure_logging(args.verbose)
+
+    try:
+        base_policy = load_policy(args.base)
+        variables = parse_variables(args.vars)
+        variable_map = _ensure_variables(variables)
+        current_date = _parse_date(args.now) if args.now else datetime.now(timezone.utc).date()
+        exceptions = load_exceptions(args.exceptions, current_date)
+        if args.requests_dir:
+            exceptions.extend(load_requests_directory(args.requests_dir, current_date))
+        result = merge_policies(base_policy, exceptions, variable_map)
+    except PolicyMergeError as exc:
+        payload = {"status": "error", "message": str(exc)}
+        if args.json:
+            sys.stdout.write(json.dumps(payload) + "\n")
+        else:
+            LOG.error("merge failed: %s", exc)
+            sys.stderr.write("merge failed: see logs for details\n")
+        return 2
+
+    summary = {
+        "status": "dry-run" if args.dry_run else "success",
+        "applied": list(result.applied_exception_ids),
+        "skipped": list(result.skipped_exception_ids),
+        "statementCount": len(result.policy.get("Statement", [])),
+    }
+
+    if args.json:
+        sys.stdout.write(json.dumps(summary) + "\n")
+    else:
+        sys.stdout.write(
+            f"merge {summary['status']}: statements={summary['statementCount']} applied={summary['applied']} skipped={summary['skipped']}\n"
+        )
+
+    if args.dry_run:
+        return 0
+
+    try:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("w", encoding="utf-8") as handle:
+            json.dump(result.policy, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except OSError as exc:  # pragma: no cover - filesystem error path
+        LOG.error("failed to write merged policy %s: %s", args.out, exc)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -1,0 +1,12 @@
+graph TD
+    POrg[Org Principal] -->|OrgId match| Cond{Policy Conditions}
+    PVpc[VPCe ${VpcEndpointId}] -->|SourceVpce match| Cond
+    Cond -->|Allow Get/List| Bucket[S3 Bucket ${BucketName}]
+    PExt[External Principal] -.Deny (Org mismatch).-> Cond
+    PVpcMismatch[Org Principal via other VPCe] -.Deny (VPCe mismatch).-> Cond
+    PHttp[SecureTransport=false] -.Deny (HTTP).-> Cond
+    Exc[Approved Exception] -->|Scoped Allow on prefix| Cond
+    classDef deny fill:#FADBD8,stroke:#C0392B,stroke-width:2px,stroke-dasharray:5 5;
+    class PExt,PVpcMismatch,PHttp deny;
+    classDef exception fill:#D5F5E3,stroke:#1E8449,stroke-width:2px;
+    class Exc exception;

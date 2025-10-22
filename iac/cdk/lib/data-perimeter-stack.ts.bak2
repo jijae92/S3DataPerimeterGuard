@@ -1,0 +1,102 @@
+import { Duration, RemovalPolicy, Stack, StackProps, CfnOutput } from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import { aws_s3 as s3, aws_iam as iam } from 'aws-cdk-lib';
+
+export interface DataPerimeterStackProps extends StackProps {
+  readonly bucketName: string;
+  readonly allowedOrgId: string;
+  readonly allowedVpce: string;
+}
+
+export class DataPerimeterStack extends Stack {
+  constructor(scope: Construct, id: string, props: DataPerimeterStackProps) {
+    super(scope, id, props);
+
+    const bucket = new s3.Bucket(this, 'DataPerimeterBucket', {
+      bucketName: props.bucketName,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      versioned: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+      autoDeleteObjects: false,
+    });
+
+    const resources = [bucket.bucketArn, `${bucket.bucketArn}/*`];
+
+    bucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'DenyRequestsFromOutsideOrg',
+        effect: iam.Effect.DENY,
+        actions: ['s3:*'],
+        principals: [new iam.AnyPrincipal()],
+        resources,
+        conditions: {
+          StringNotEquals: {
+            'aws:PrincipalOrgID': props.allowedOrgId,
+          },
+        },
+      }),
+    );
+
+    bucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'DenyRequestsNotFromVpce',
+        effect: iam.Effect.DENY,
+        actions: ['s3:*'],
+        principals: [new iam.AnyPrincipal()],
+        resources,
+        conditions: {
+          StringNotEquals: {
+            'aws:SourceVpce': props.allowedVpce,
+          },
+        },
+      }),
+    );
+
+    bucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'DenyPublicAnonymousAccess',
+        effect: iam.Effect.DENY,
+        actions: ['s3:GetObject', 's3:ListBucket'],
+        principals: [new iam.AnyPrincipal()],
+        resources,
+        conditions: {
+          StringEquals: {
+            'aws:PrincipalType': 'Anonymous',
+          },
+        },
+      }),
+    );
+
+    bucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'DenyAclAndPolicyChanges',
+        effect: iam.Effect.DENY,
+        actions: [
+          's3:PutBucketAcl',
+          's3:PutObjectAcl',
+          's3:PutBucketPolicy',
+          's3:DeleteBucketPolicy',
+        ],
+        principals: [new iam.AnyPrincipal()],
+        resources,
+      }),
+    );
+
+    new CfnOutput(this, 'BucketName', {
+      value: bucket.bucketName,
+      description: 'Protected data perimeter bucket name',
+    });
+
+    new CfnOutput(this, 'AllowedOrgId', {
+      value: props.allowedOrgId,
+      description: 'AWS Organizations ID permitted by the perimeter',
+    });
+
+    new CfnOutput(this, 'AllowedVpce', {
+      value: props.allowedVpce,
+      description: 'VPC endpoint required for data perimeter access',
+    });
+  }
+}

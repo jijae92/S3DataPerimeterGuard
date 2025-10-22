@@ -1,0 +1,89 @@
+{
+  "_template": "Replace ${Variable} placeholders via your deployment pipeline",
+  "_assumptions": [
+    "ObjectOwnership is set to BucketOwnerEnforced, preventing ACL usage.",
+    "Clients should prefer x-amz-server-side-encryption (AES256 or aws:kms) on PutObject."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyPublicACLAndPolicyChanges",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:PutBucketAcl",
+        "s3:PutObjectAcl",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy"
+      ],
+      "Resource": [
+        "${BucketArn}",
+        "${BucketArn}/*"
+      ]
+    },
+    {
+      "Sid": "DenyRequestsOutsideOrganization",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "${BucketArn}",
+        "${BucketArn}/*"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalOrgID": "${OrgId}"
+        }
+      }
+    },
+    {
+      "Sid": "DenyRequestsOutsideVpce",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "${BucketArn}",
+        "${BucketArn}/*"
+      ],
+      "Condition": {
+        "StringNotEquals": {
+          "aws:SourceVpce": "${VpcEndpointId}"
+        }
+      }
+    },
+    {
+      "Sid": "EnforceSecureTransportOptional",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "${BucketArn}",
+        "${BucketArn}/*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    },
+    {
+      "Sid": "AllowOrgAccessViaVpce",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "${BucketArn}",
+        "${BucketArn}/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalOrgID": "${OrgId}",
+          "aws:SourceVpce": "${VpcEndpointId}"
+        }
+      }
+    }
+  ]
+}

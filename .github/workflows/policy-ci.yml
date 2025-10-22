@@ -1,0 +1,28 @@
+name: Policy CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run policy validation
+        run: python tools/validate_policy.py policies/bucket-policy.base.json policies/bucket-policy.exceptions.json policies/scp-deny-external.json policies/scp-restrict-s3-actions.json
+      - name: Run unit tests
+        run: pytest -q --maxfail=1 --disable-warnings
+      - name: Generate diagrams
+        run: python tools/generate_diagram.py --base policies/bucket-policy.base.json --output docs/diagrams.mmd --dry-run

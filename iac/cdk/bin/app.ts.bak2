@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+import 'source-map-support/register';
+import { App } from 'aws-cdk-lib';
+import { DataPerimeterStack, DataPerimeterStackProps } from '../lib/data-perimeter-stack';
+
+const app = new App();
+
+const orgId = (app.node.tryGetContext('orgId') as string) ?? 'o-exampleorg';
+const allowedVpce = (app.node.tryGetContext('vpceId') as string) ?? 'vpce-00000000000000000';
+const bucketName = (app.node.tryGetContext('bucketName') as string) ?? 'example-data-perimeter-bucket';
+
+const stackProps: DataPerimeterStackProps = {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION,
+  },
+  bucketName,
+  allowedOrgId: orgId,
+  allowedVpce,
+};
+
+new DataPerimeterStack(app, 'S3DataPerimeterStack', stackProps);

@@ -1,0 +1,18 @@
+{
+  "_template": "Exceptions allow time-bound overrides. Deployment tooling must filter out entries where expiresAt < today (UTC).",
+  "Exceptions": [
+    {
+      "principalArn": "arn:aws:iam::123456789012:role/TeamADataConsumer",
+      "actions": [
+        "s3:GetObject"
+      ],
+      "prefix": "team-a/*",
+      "expiresAt": "2026-01-31",
+      "reason": "Partner analytics review for Q4",
+      "_notes": [
+        "When valid, merge as an Allow with scoped Resource ${BucketArn}/${prefix} and retain vpce/org conditions unless business case waives one.",
+        "Tooling should skip/omit this exception once expiresAt is in the past."
+      ]
+    }
+  ]
+}

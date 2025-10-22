@@ -1,0 +1,98 @@
+"""Generate Mermaid diagrams summarising the data perimeter policy architecture."""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List
+
+LOG = logging.getLogger("s3_data_perimeter.diagram")
+
+
+def load_policy(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def build_mermaid(base_policy: Dict[str, Any]) -> str:
+    """Create a Mermaid graph describing org/VPC enforcement flow."""
+    org_condition = "o-exampleorg"
+    vpce_condition = "vpce-00000000000000000"
+
+    statements: List[Dict[str, Any]] = base_policy.get("Statement", [])
+    for statement in statements:
+        statement_json = json.dumps(statement)
+        if "aws:PrincipalOrgID" in statement_json:
+            org_condition = statement_json.split("aws:PrincipalOrgID\": ")[1].split('"')[1]
+        if "aws:SourceVpce" in statement_json:
+            vpce_condition = statement_json.split("aws:SourceVpce\": ")[1].split('"')[1]
+
+    diagram = f"""graph TD
+    A[Org accounts (OrgId: {org_condition})] -->|Allowed| B[S3 Bucket]
+    C[VPC Endpoint {vpce_condition}] -->|Allowed| B
+    D[External Principal] -.Denied.-> B
+    E[Public/Anonymous] -.Denied.-> B
+    F[ACL & Policy Changes] -.Denied.-> B
+"""
+    return diagram
+
+
+@dataclass(frozen=True)
+class DiagramResult:
+    mermaid: str
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", type=Path, required=True, help="Baseline bucket policy JSON")
+    parser.add_argument("--output", type=Path, required=True, help="Destination Mermaid (.mmd) file")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without writing output")
+    parser.add_argument("--json", action="store_true", help="Emit JSON payload instead of text")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    return parser
+
+
+def configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s - %(message)s")
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    configure_logging(args.verbose)
+
+    try:
+        base_policy = load_policy(args.base)
+    except FileNotFoundError:
+        message = f"error: {args.base} not found. Ensure the baseline policy exists before diagram generation."
+        if args.json:
+            print(json.dumps({"status": "error", "message": message}))
+        else:
+            print(message)
+        return 2
+
+    diagram = build_mermaid(base_policy)
+    result = DiagramResult(mermaid=diagram)
+
+    if args.dry_run:
+        payload = {"status": "dry-run", "preview": diagram.splitlines()[0]}
+        if args.json:
+            print(json.dumps(payload))
+        else:
+            print("dry-run success: diagram generated; skipping write")
+        return 0
+
+    if args.json:
+        print(json.dumps({"status": "success", "diagram": diagram}))
+    else:
+        print("diagram success: mermaid written")
+
+    args.output.write_text(diagram, encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

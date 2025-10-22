@@ -1,0 +1,21 @@
+{
+  "_template": "Attach to the organization root or designated OU. Replace ${OrgId} prior to deployment.",
+  "_guidance": "Allowlisted AWS service principals remain exempt when aws:PrincipalIsAWSService is true.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyExternalPrincipals",
+      "Effect": "Deny",
+      "Action": "s3:*",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalOrgID": "${OrgId}"
+        },
+        "Bool": {
+          "aws:PrincipalIsAWSService": "false"
+        }
+      }
+    }
+  ]
+}

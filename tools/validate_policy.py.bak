@@ -1,0 +1,160 @@
+"""Lightweight policy validator for the S3 Data-Perimeter Guard blueprints."""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List
+
+from jsonschema import Draft202012Validator, ValidationError
+
+LOG = logging.getLogger("s3_data_perimeter.validate")
+
+
+POLICY_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "Version": {"type": "string"},
+        "Statement": {
+            "type": "array",
+            "items": {"type": "object"},
+            "minItems": 1,
+        },
+    },
+    "required": ["Version", "Statement"],
+    "additionalProperties": True,
+}
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    path: Path
+    errors: List[str]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def load_policy(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def validate_schema(document: Dict[str, Any], path: Path) -> List[str]:
+    validator = Draft202012Validator(POLICY_SCHEMA)
+    return [f"schema: {err.message}" for err in validator.iter_errors(document)]
+
+
+def _find_statement(statements: Iterable[Dict[str, Any]], sid: str) -> Dict[str, Any] | None:
+    for stmt in statements:
+        if stmt.get("Sid") == sid:
+            return stmt
+    return None
+
+
+def validate_bucket_policy(document: Dict[str, Any]) -> List[str]:
+    statements = document.get("Statement", [])
+    errors: List[str] = []
+
+    sid_checks = {
+        "DenyRequestsFromOutsideOrg": "aws:PrincipalOrgID",
+        "DenyRequestsNotFromVpce": "aws:SourceVpce",
+        "DenyPublicAnonymousAccess": "aws:PrincipalType",
+        "DenyAclAndPolicyChanges": None,
+    }
+
+    for sid, condition_key in sid_checks.items():
+        statement = _find_statement(statements, sid)
+        if not statement:
+            errors.append(f"missing statement with Sid {sid}")
+            continue
+        if condition_key and condition_key not in json.dumps(statement):
+            errors.append(f"statement {sid} missing condition key {condition_key}")
+
+    return errors
+
+
+def validate_scp(policy: Dict[str, Any]) -> List[str]:
+    statements = policy.get("Statement", [])
+    if not statements:
+        return ["SCP must contain at least one statement"]
+    first = statements[0]
+    missing = [key for key in ("Effect", "Action", "Resource") if key not in first]
+    if missing:
+        return [f"statement missing fields: {', '.join(missing)}"]
+    if first.get("Effect") != "Deny":
+        return ["SCP first statement must be a Deny"]
+    return []
+
+
+def run_validations(paths: Iterable[Path]) -> List[ValidationResult]:
+    results: List[ValidationResult] = []
+    for path in paths:
+        errors: List[str] = []
+        try:
+            document = load_policy(path)
+        except json.JSONDecodeError as exc:
+            errors.append(f"json: {exc}")
+        else:
+            errors.extend(validate_schema(document, path))
+            if "bucket-policy" in path.name:
+                errors.extend(validate_bucket_policy(document))
+            if "scp-" in path.name:
+                errors.extend(validate_scp(document))
+        results.append(ValidationResult(path=path, errors=errors))
+    return results
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("policies", type=Path, nargs="+", help="Policy documents to validate")
+    parser.add_argument("--json", action="store_true", help="Emit JSON output only")
+    parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    return parser
+
+
+def configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s - %(message)s")
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    configure_logging(args.verbose)
+
+    results = run_validations(args.policies)
+    failures = [res for res in results if not res.ok]
+
+    if args.json:
+        payload = {
+            "status": "success" if not failures else "failed",
+            "results": [
+                {"path": str(res.path), "errors": res.errors}
+                for res in results
+            ],
+        }
+        sys.stdout.write(json.dumps(payload) + "\n")
+    else:
+        for res in results:
+            if res.ok:
+                sys.stdout.write(f"validate success: {res.path}\n")
+            else:
+                sys.stdout.write(
+                    f"validate failed: {res.path} -> {len(res.errors)} issue(s): {', '.join(res.errors)}\n"
+                )
+
+    if failures:
+        LOG.error("validation failed for %d policy files", len(failures))
+        return 2
+
+    sys.stdout.write("validation success\n")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

@@ -1,0 +1,25 @@
+{
+  "name": "s3-data-perimeter-guard",
+  "version": "0.1.0",
+  "bin": {
+    "s3-data-perimeter-guard": "bin/app.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "lint": "eslint --ext .ts lib bin"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.147.1",
+    "constructs": "10.3.0",
+    "source-map-support": "0.5.21"
+  },
+  "devDependencies": {
+    "@types/node": "20.11.30",
+    "eslint": "8.57.0",
+    "ts-node": "10.9.2",
+    "typescript": "5.4.5"
+  }
+}

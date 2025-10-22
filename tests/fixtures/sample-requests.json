@@ -1,0 +1,74 @@
+[
+  {
+    "id": "org_mismatch",
+    "description": "Principal from another Org is denied",
+    "principalOrgId": "o-otherorg",
+    "principalArn": "arn:aws:iam::999999999999:role/External",
+    "sourceVpce": "vpce-00000000000000000",
+    "action": "s3:GetObject",
+    "resource": "arn:aws:s3:::example-data-perimeter-bucket/docs/report.pdf",
+    "secureTransport": true,
+    "isAnonymous": false,
+    "expected": "Deny"
+  },
+  {
+    "id": "vpce_mismatch",
+    "description": "Principal from same Org but different VPCe is denied",
+    "principalOrgId": "o-exampleorg",
+    "principalArn": "arn:aws:iam::111111111111:role/Engineering",
+    "sourceVpce": "vpce-1234567890",
+    "action": "s3:GetObject",
+    "resource": "arn:aws:s3:::example-data-perimeter-bucket/docs/report.pdf",
+    "secureTransport": true,
+    "isAnonymous": false,
+    "expected": "Deny"
+  },
+  {
+    "id": "anonymous_access",
+    "description": "Anonymous access denied for GetObject/ListBucket",
+    "principalOrgId": null,
+    "principalArn": "anonymous",
+    "sourceVpce": null,
+    "action": "s3:GetObject",
+    "resource": "arn:aws:s3:::example-data-perimeter-bucket/public/file.txt",
+    "secureTransport": true,
+    "isAnonymous": true,
+    "expected": "Deny"
+  },
+  {
+    "id": "exception_allowed",
+    "description": "Approved exception allows partner read on specific prefix",
+    "principalOrgId": "o-exampleorg",
+    "principalArn": "arn:aws:iam::123456789012:role/TeamADataConsumer",
+    "sourceVpce": "vpce-00000000000000000",
+    "action": "s3:GetObject",
+    "resource": "arn:aws:s3:::example-data-perimeter-bucket/team-a/summary.csv",
+    "secureTransport": true,
+    "isAnonymous": false,
+    "expected": "Allow"
+  },
+  {
+    "id": "exception_prefix_miss",
+    "description": "Exception does not allow other prefixes",
+    "principalOrgId": "o-exampleorg",
+    "principalArn": "arn:aws:iam::123456789012:role/TeamADataConsumer",
+    "sourceVpce": "vpce-00000000000000000",
+    "action": "s3:GetObject",
+    "resource": "arn:aws:s3:::example-data-perimeter-bucket/team-b/data.csv",
+    "secureTransport": true,
+    "isAnonymous": false,
+    "expected": "Deny"
+  },
+  {
+    "id": "secure_transport_false",
+    "description": "HTTP (SecureTransport=false) is denied",
+    "principalOrgId": "o-exampleorg",
+    "principalArn": "arn:aws:iam::111111111111:role/Engineering",
+    "sourceVpce": "vpce-00000000000000000",
+    "action": "s3:GetObject",
+    "resource": "arn:aws:s3:::example-data-perimeter-bucket/docs/report.pdf",
+    "secureTransport": false,
+    "isAnonymous": false,
+    "expected": "Deny"
+  }
+]

@@ -1,0 +1,121 @@
+"""Generate Mermaid diagrams summarising the data perimeter policy architecture."""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List
+
+LOG = logging.getLogger("s3_data_perimeter.diagram")
+
+
+def load_policy(path: Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _extract_condition_value(statement: Dict[str, Any], key: str) -> str | None:
+    condition = statement.get("Condition")
+    if not isinstance(condition, dict):
+        return None
+    for candidate in (
+        "StringEquals",
+        "ForAllValues:StringEquals",
+        "ForAnyValue:StringEquals",
+        "StringLike",
+    ):
+        block = condition.get(candidate)
+        if isinstance(block, dict) and key in block:
+            return str(block[key])
+    return None
+
+
+def build_mermaid(base_policy: Dict[str, Any]) -> str:
+    """Create a Mermaid graph describing org/VPC enforcement flow."""
+    org_condition = "<OrgId>"
+    vpce_condition = "<VPCe>"
+
+    statements: List[Dict[str, Any]] = [
+        stmt for stmt in base_policy.get("Statement", []) if isinstance(stmt, dict)
+    ]
+
+    for statement in statements:
+        org_value = _extract_condition_value(statement, "aws:PrincipalOrgID")
+        if org_value:
+            org_condition = org_value
+        vpce_value = _extract_condition_value(statement, "aws:SourceVpce")
+        if vpce_value:
+            vpce_condition = vpce_value
+
+    diagram = (
+        "graph TD\n"
+        f"    A[Org accounts (OrgId: {org_condition})] -->|Allowed| B[S3 Bucket]\n"
+        f"    C[VPC Endpoint {vpce_condition}] -->|Allowed| B\n"
+        "    D[External Principal] -.Denied.-> B\n"
+        "    E[Public/Anonymous] -.Denied.-> B\n"
+        "    F[ACL & Policy Changes] -.Denied.-> B\n"
+    )
+    return diagram
+
+
+@dataclass(frozen=True)
+class DiagramResult:
+    mermaid: str
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", type=Path, required=True, help="Baseline bucket policy JSON")
+    parser.add_argument("--output", type=Path, required=True, help="Destination Mermaid (.mmd) file")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without writing output")
+    parser.add_argument("--json", action="store_true", help="Emit JSON payload instead of text")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    return parser
+
+
+def configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s - %(message)s")
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    configure_logging(args.verbose)
+
+    try:
+        base_policy = load_policy(args.base)
+    except FileNotFoundError:
+        message = (
+            f"error: {args.base} not found. Ensure the baseline policy exists before diagram generation."
+        )
+        if args.json:
+            print(json.dumps({"status": "error", "message": message}))
+        else:
+            print(message)
+        return 2
+
+    diagram = build_mermaid(base_policy)
+    result = DiagramResult(mermaid=diagram)
+
+    if args.dry_run:
+        payload = {"status": "dry-run", "preview": diagram.splitlines()[0]}
+        if args.json:
+            print(json.dumps(payload))
+        else:
+            print("dry-run success: diagram generated; skipping write")
+        return 0
+
+    if args.json:
+        print(json.dumps({"status": "success", "diagram": diagram}))
+    else:
+        print("diagram success: mermaid written")
+
+    args.output.write_text(result.mermaid, encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

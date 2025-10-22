@@ -1,0 +1,31 @@
+version: 0.2
+env:
+  variables:
+    PYTHONUNBUFFERED: "1"
+    SECURITY_BANNER: "Security: load secrets via .env/secret manager; mask tokens/keys in logs; 10s timeout+backoff; least privilege."
+    QUALITY_BANNER: "Quality: type hints+docstrings, test coverage ≥80%, use CLI exit codes, mock external I/O."
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - python -m pip install --upgrade pip
+      - pip install -r requirements.txt
+      - npm install --prefix iac/cdk
+  pre_build:
+    commands:
+      - echo "Running policy validation"
+      - python tools/validate_policy.py policies/bucket-policy.base.json policies/bucket-policy.exceptions.json policies/scp-deny-external.json policies/scp-restrict-s3-actions.json
+  build:
+    commands:
+      - echo "Running unit tests"
+      - pytest -q --maxfail=1 --disable-warnings
+  post_build:
+    commands:
+      - echo "Synthesizing CDK"
+      - npm run --prefix iac/cdk build
+      - npx --yes cdk@2.147.1 synth --app "npx ts-node --prefer-ts-exts bin/app.ts" --output dist
+artifacts:
+  files:
+    - '**/*'
+  discard-paths: no

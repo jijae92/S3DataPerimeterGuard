@@ -1,0 +1,69 @@
+import json
+import sys
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from tools.merge_policy import MergeResult, load_policy, load_exceptions, merge_policies  # pylint: disable=wrong-import-position
+
+
+POLICIES_DIR = PROJECT_ROOT / "policies"
+
+
+@pytest.fixture(scope="module")
+def base_policy():
+    return load_policy(POLICIES_DIR / "bucket-policy.base.json")
+
+
+@pytest.fixture(scope="module")
+def exceptions_payload(tmp_path_factory):
+    return load_exceptions(POLICIES_DIR / "bucket-policy.exceptions.json")
+
+
+def test_org_id_condition_present(base_policy):
+    statements = json.dumps(base_policy["Statement"])
+    assert "aws:PrincipalOrgID" in statements, "OrgId condition must be enforced"
+
+
+def test_vpce_condition_present(base_policy):
+    statements = json.dumps(base_policy["Statement"])
+    assert "aws:SourceVpce" in statements, "VPC endpoint condition must be enforced"
+
+
+def test_public_access_denied(base_policy):
+    deny_public = next(
+        (stmt for stmt in base_policy["Statement"] if stmt.get("Sid") == "DenyPublicAnonymousAccess"),
+        None,
+    )
+    assert deny_public is not None
+    assert deny_public["Effect"] == "Deny"
+    assert "s3:GetObject" in deny_public["Action"]
+
+
+def test_acl_changes_denied(base_policy):
+    acl_statement = next(
+        (stmt for stmt in base_policy["Statement"] if stmt.get("Sid") == "DenyAclAndPolicyChanges"),
+        None,
+    )
+    assert acl_statement is not None
+    assert "s3:PutBucketAcl" in acl_statement["Action"]
+
+
+def test_exception_applied_when_active(base_policy, exceptions_payload):
+    now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    result: MergeResult = merge_policies(base_policy, exceptions_payload, current_time=now)
+    assert "partner-analytics-read" in result.applied_exception_ids
+    statements = json.dumps(result.policy["Statement"])
+    assert "AllowPartnerRead" in statements
+
+
+def test_exception_skipped_when_expired(base_policy, exceptions_payload):
+    expired = [dict(entry) for entry in exceptions_payload]
+    expired[0]["_expires_at"] = datetime.now(timezone.utc) - timedelta(days=1)
+    result: MergeResult = merge_policies(base_policy, expired)
+    assert "partner-analytics-read" in result.skipped_exception_ids

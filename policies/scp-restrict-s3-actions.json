@@ -1,0 +1,28 @@
+{
+  "_template": "Attach at OU/account level. Update ${OrgAdminRolePattern} (e.g., arn:aws:iam::*:role/OrgAdmin).",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenySensitiveS3Administration",
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:PutBucketAcl",
+        "s3:PutObjectAcl",
+        "s3:ReplicateObject",
+        "s3:PutReplicationConfiguration",
+        "s3:PutAccountPublicAccessBlock",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:CreateBucket",
+        "s3:PutLifecycleConfiguration"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": "${OrgAdminRolePattern}"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyRiskyS3Actions",
+      "Effect": "Deny",
+      "Action": [
+        "s3:PutBucketAcl",
+        "s3:PutObjectAcl",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:PutReplicationConfiguration",
+        "s3:PutAccountPublicAccessBlock"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

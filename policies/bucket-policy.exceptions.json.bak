@@ -1,0 +1,29 @@
+{
+  "exceptions": [
+    {
+      "id": "partner-analytics-read",
+      "approvedBy": "security-lead@example.com",
+      "expiresAt": "2026-01-31T00:00:00Z",
+      "scope": [
+        "s3:GetObject"
+      ],
+      "statement": {
+        "Sid": "AllowPartnerRead",
+        "Effect": "Allow",
+        "Principal": {
+          "AWS": "arn:aws:iam::123456789012:role/PartnerAnalytics"
+        },
+        "Action": [
+          "s3:GetObject"
+        ],
+        "Resource": "arn:aws:s3:::example-data-perimeter-bucket/partner/*",
+        "Condition": {
+          "StringEquals": {
+            "aws:PrincipalOrgID": "o-examplepartner",
+            "aws:SourceVpce": "vpce-00000000000000000"
+          }
+        }
+      }
+    }
+  ]
+}

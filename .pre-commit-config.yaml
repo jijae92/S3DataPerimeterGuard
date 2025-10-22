@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        language_version: python3.11
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: v0.4.5
+    hooks:
+      - id: ruff
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        additional_dependencies: ["prettier-plugin-toml"]
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest -q --maxfail=1 --disable-warnings
+        language: system
+        types: [python]
+        pass_filenames: false

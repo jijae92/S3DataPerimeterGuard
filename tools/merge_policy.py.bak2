@@ -1,0 +1,188 @@
+"""Utility to merge the baseline bucket policy with approved exception statements."""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Tuple
+
+LOG = logging.getLogger("s3_data_perimeter.merge")
+
+
+class PolicyMergeError(RuntimeError):
+    """Raised when the policy set fails validation."""
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    policy: Dict[str, Any]
+    applied_exception_ids: Tuple[str, ...]
+    skipped_exception_ids: Tuple[str, ...]
+
+
+def load_policy(path: Path) -> Dict[str, Any]:
+    """Load a policy document from JSON, ensuring the expected shape."""
+    if not path.exists():
+        raise PolicyMergeError(f"Policy file not found: {path}")
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError as exc:  # pragma: no cover - explicit error path
+        raise PolicyMergeError(f"Invalid JSON in {path}: {exc}") from exc
+
+    if "Statement" not in data or not isinstance(data["Statement"], list):
+        raise PolicyMergeError(f"Policy at {path} must contain a Statement list")
+
+    return data
+
+
+def _parse_iso8601(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PolicyMergeError(f"Invalid ISO-8601 timestamp: {value}") from exc
+
+
+def load_exceptions(path: Path) -> List[Dict[str, Any]]:
+    """Read the exception payload and return enriched metadata entries."""
+    if not path.exists():
+        LOG.info("No exceptions file found at %s; continuing without overrides", path)
+        return []
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:  # pragma: no cover - explicit error path
+        raise PolicyMergeError(f"Invalid JSON in {path}: {exc}") from exc
+
+    exceptions = payload.get("exceptions", [])
+    if not isinstance(exceptions, list):
+        raise PolicyMergeError("Exceptions payload must include a list under 'exceptions'")
+
+    for entry in exceptions:
+        if not isinstance(entry, dict):
+            raise PolicyMergeError("Each exception entry must be an object")
+        for key in ("id", "approvedBy", "expiresAt", "statement"):
+            if key not in entry:
+                raise PolicyMergeError(f"Exception {entry!r} missing required field '{key}'")
+        entry["_expires_at"] = _parse_iso8601(str(entry["expiresAt"]))
+
+    return exceptions
+
+
+def merge_policies(
+    base_policy: Dict[str, Any],
+    exceptions: Iterable[Dict[str, Any]],
+    current_time: datetime | None = None,
+) -> MergeResult:
+    """Merge base policy with exception statements that are still valid."""
+    now = current_time or datetime.now(timezone.utc)
+    statements: List[Dict[str, Any]] = list(base_policy["Statement"])
+
+    applied: List[str] = []
+    skipped: List[str] = []
+
+    for entry in exceptions:
+        exception_id = str(entry["id"])
+        expires_at: datetime = entry["_expires_at"]
+        if expires_at < now:
+            LOG.warning("Skipping expired exception %s (expired %s)", exception_id, expires_at.isoformat())
+            skipped.append(exception_id)
+            continue
+
+        statement = entry["statement"]
+        if not isinstance(statement, dict):
+            raise PolicyMergeError(f"Exception {exception_id} statement must be a JSON object")
+
+        statements.append(statement)
+        applied.append(exception_id)
+
+    merged = dict(base_policy)
+    merged["Statement"] = statements
+    return MergeResult(policy=merged, applied_exception_ids=tuple(applied), skipped_exception_ids=tuple(skipped))
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", type=Path, required=True, help="Path to baseline policy JSON")
+    parser.add_argument("--exceptions", type=Path, required=True, help="Path to exceptions JSON")
+    parser.add_argument("--output", type=Path, required=True, help="Destination file for merged policy")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without writing output")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging for troubleshooting")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON result")
+    parser.add_argument(
+        "--now",
+        type=str,
+        default=None,
+        help="Override current timestamp (ISO-8601) for deterministic testing",
+    )
+    return parser
+
+
+def configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s - %(message)s")
+
+
+def _serialize_result(result: MergeResult) -> Dict[str, Any]:
+    return {
+        "applied": list(result.applied_exception_ids),
+        "skipped": list(result.skipped_exception_ids),
+        "statementCount": len(result.policy.get("Statement", [])),
+    }
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    configure_logging(args.verbose)
+
+    try:
+        base_policy = load_policy(args.base)
+        exceptions = load_exceptions(args.exceptions)
+        now = _parse_iso8601(args.now) if args.now else None
+        result = merge_policies(base_policy, exceptions, current_time=now)
+    except PolicyMergeError as exc:
+        message = f"merge failed: {exc}"
+        if args.json:
+            sys.stdout.write(json.dumps({"status": "error", "message": str(exc)}) + "\n")
+        else:
+            LOG.error("%s", message)
+            sys.stderr.write("merge failed: check logs for details\n")
+        return 2
+
+    if args.dry_run:
+        summary = _serialize_result(result)
+        if args.json:
+            sys.stdout.write(json.dumps({"status": "dry-run", **summary}) + "\n")
+        else:
+            sys.stdout.write(
+                "dry-run success: would write merged policy with "
+                f"{summary['statementCount']} statements (applied={summary['applied']}, skipped={summary['skipped']})\n"
+            )
+        return 0
+
+    if args.json:
+        sys.stdout.write(json.dumps({"status": "success", **_serialize_result(result)}) + "\n")
+    else:
+        sys.stdout.write("merge success: merged policy written\n")
+
+    try:
+        with args.output.open("w", encoding="utf-8") as handle:
+            json.dump(result.policy, handle, indent=2)
+            handle.write("\n")
+    except OSError as exc:  # pragma: no cover - filesystem error path
+        LOG.error("failed to write output %s: %s", args.output, exc)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

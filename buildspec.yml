@@ -1,0 +1,26 @@
+version: 0.2
+env:
+  exported-variables:
+    - FINDINGS_COUNT
+phases:
+  install:
+    commands:
+      - python3.11 -m venv .venv
+      - source .venv/bin/activate
+      - pip install -r requirements.txt
+      - npm ci --prefix dashboard
+  build:
+    commands:
+      - source .venv/bin/activate
+      - python tools/simulator.py run --bucket $TARGET_BUCKET --output artifacts/findings.json
+      - python tools/analyzer.py summarize artifacts/findings.json > artifacts/summary.json
+      - FINDINGS_COUNT=$(jq '.summary.totalFindings' artifacts/findings.json)
+      - echo "Total findings: $FINDINGS_COUNT"
+      - pytest -q
+  post_build:
+    commands:
+      - aws s3 cp artifacts/findings.json s3://$ARTIFACT_BUCKET/$CODEBUILD_BUILD_ID/findings.json
+artifacts:
+  files:
+    - artifacts/findings.json
+    - artifacts/summary.json

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.dist/
+dist/
+node_modules/
+*.tsbuildinfo
+.env
+.venv/
+.aws-sam/
+cdk.out/
+coverage/
+pytest.cache/
+.idea/
+.vscode/
