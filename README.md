@@ -141,13 +141,14 @@ python tools/simulator.py run \
 ## 아키텍처 개요
 ```mermaid
 flowchart LR
-    CTrail[CloudTrail Logs (S3)] --> LambdaAnalyzer[Analyzer Lambda]
-    LambdaAnalyzer --> AccessAnalyzer[Access Analyzer API]
-    LambdaAnalyzer --> Simulator[Policy Simulator]
-    Simulator --> FindingsS3[/artifacts/findings.json]
-    FindingsS3 --> Dashboard[Streamlit Dashboard]
-    Simulator --> Notifier[SNS/Slack/Email]
-    Dashboard --> Operators
+  CTrail[CloudTrail Logs (S3)] --> Analyzer[Analyzer Lambda]
+  Analyzer --> AccessAnalyzer[Access Analyzer API]
+  Analyzer --> Simulator[Policy Simulator]
+  Simulator --> FindingsS3[artifacts/findings.json]
+  FindingsS3 --> Dashboard[Streamlit Dashboard]
+  Simulator --> Notifier[SNS / Slack / Email]
+  Dashboard --> Operators[Operators]
+
 ```
 - CloudTrail 로그가 S3에 적재되면 Analyzer Lambda가 이벤트를 처리해 Access Analyzer 및 Policy Simulator API를 호출합니다.
 - 정책 평가 결과와 자동 수정 제안은 `/artifacts/findings.json` 및 대시보드로 전송됩니다.
